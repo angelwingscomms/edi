@@ -1,0 +1,16 @@
+{
+  "name": "edi",
+  "short_name": "edi",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#ffffff",
+  "theme_color": "#ff3e00",
+  "icons": [
+    {
+      "src": "/heart.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}
