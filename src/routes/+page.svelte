@@ -1,4 +1,6 @@
 <script lang="ts">
+	type Marker = { t: number; img: string | null };
+
 	let video = $state<HTMLVideoElement | null>(null);
 	let fileInput = $state<HTMLInputElement | null>(null);
 	let src = $state<string | null>(null);
@@ -6,7 +8,7 @@
 	let duration = $state(0);
 	let now = $state(0);
 	let playing = $state(false);
-	let markers = $state<number[]>([]);
+	let markers = $state<Marker[]>([]);
 	let dragOver = $state(false);
 
 	const FPS = 30;
@@ -58,17 +60,51 @@
 		}
 	}
 
+	function captureThumb(t: number) {
+		const url = src;
+		if (!url) return;
+		const v = document.createElement('video');
+		v.muted = true;
+		v.preload = 'auto';
+		v.src = url;
+		v.onloadedmetadata = () => {
+			v.currentTime = Math.min(Math.max(0, t), (v.duration || t + 0.05) - 0.02);
+		};
+		v.onseeked = () => {
+			try {
+				const w = 160;
+				const h = v.videoWidth ? Math.round((v.videoHeight / v.videoWidth) * w) : 90;
+				const c = document.createElement('canvas');
+				c.width = w;
+				c.height = h;
+				c.getContext('2d')!.drawImage(v, 0, 0, w, h);
+				const img = c.toDataURL('image/jpeg', 0.6);
+				const i = markers.findIndex((m) => Math.abs(m.t - t) < TOL);
+				if (i >= 0) markers[i].img = img;
+			} catch {
+				/* keep timecode placeholder */
+			}
+			v.removeAttribute('src');
+			v.load();
+		};
+		v.onerror = () => {
+			v.removeAttribute('src');
+			v.load();
+		};
+	}
+
 	function addMarker() {
 		if (!video || !src) return;
 		const t = Math.round(video.currentTime * FPS) / FPS;
-		if (markers.some((m) => Math.abs(m - t) < TOL)) return;
-		markers = [...markers, t].sort((a, b) => a - b);
+		if (markers.some((m) => Math.abs(m.t - t) < TOL)) return;
+		markers = [...markers, { t, img: null }].sort((a, b) => a.t - b.t);
+		captureThumb(t);
 	}
 
 	function removeMarker() {
 		if (!video || !src) return;
 		const t = video.currentTime;
-		markers = markers.filter((m) => Math.abs(m - t) >= TOL);
+		markers = markers.filter((m) => Math.abs(m.t - t) >= TOL);
 	}
 
 	function onKey(e: KeyboardEvent) {
@@ -153,8 +189,8 @@
 
 		<div class="timeline" onclick={barSeek} onkeydown={(e) => { if (e.key === 'ArrowLeft') stepFrame(-1); if (e.key === 'ArrowRight') stepFrame(1); }} role="slider" aria-label="timeline" aria-valuenow={now} aria-valuemax={duration} tabindex="0">
 			<div class="progress" style:width={duration ? `${(now / duration) * 100}%` : '0%'}></div>
-			{#each markers as m (m)}
-				<div class="marker" style:left={duration ? `${(m / duration) * 100}%` : '0%'} title={fmt(m)}></div>
+			{#each markers as m (m.t)}
+				<div class="marker" style:left={duration ? `${(m.t / duration) * 100}%` : '0%'} title={fmt(m.t)}></div>
 			{/each}
 			<div class="head" style:left={duration ? `${(now / duration) * 100}%` : '0%'}></div>
 		</div>
@@ -170,11 +206,14 @@
 		<p class="meta">f{frame}/{totalFrames} · {fmt(now)} / {fmt(duration)} · {markers.length} marks · <code>,</code> <code>.</code> step · <code>space</code> play · <code>m</code>/<code>n</code> mark</p>
 
 		{#if markers.length}
-			<ol class="marks">
-				{#each markers as m, i (m)}
-					<li><button onclick={() => seek(m)}>#{i + 1} {fmt(m)}</button></li>
+			<div class="strip">
+				{#each markers as m, i (m.t)}
+					<button class="thumb" onclick={() => seek(m.t)} title={fmt(m.t)}>
+						{#if m.img}<img src={m.img} alt="mark {i + 1}" />{:else}<span class="ph">{fmt(m.t)}</span>}
+						<span class="cap">#{i + 1} {fmt(m.t)}</span>
+					</button>
 				{/each}
-			</ol>
+			</div>
 		{/if}
 	{/if}
 </main>
@@ -256,11 +295,39 @@
 		color: #888;
 		font-size: 13px;
 	}
-	.marks {
+	.strip {
 		display: flex;
-		flex-wrap: wrap;
 		gap: 8px;
-		list-style: none;
+		overflow-x: auto;
+		margin-top: 8px;
+		padding-bottom: 4px;
+	}
+	.thumb {
+		flex: 0 0 auto;
+		width: 160px;
 		padding: 0;
+		background: #111;
+		border: 1px solid #333;
+		color: #ccc;
+	}
+	.thumb img {
+		width: 160px;
+		height: 90px;
+		object-fit: cover;
+		display: block;
+	}
+	.thumb .ph {
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		width: 160px;
+		height: 90px;
+		font-size: 12px;
+	}
+	.thumb .cap {
+		display: block;
+		font-size: 11px;
+		padding: 2px 4px;
+		text-align: left;
 	}
 </style>
