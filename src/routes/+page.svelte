@@ -23,15 +23,14 @@
 	}
 
 	function loadFile(f: File | undefined) {
-		if (!f || !video) return;
+		if (!f) return;
 		if (src) URL.revokeObjectURL(src);
 		src = URL.createObjectURL(f);
 		fileName = f.name;
 		markers = [];
 		now = 0;
+		duration = 0;
 		playing = false;
-		video.src = src;
-		video.load();
 	}
 
 	function seek(t: number) {
