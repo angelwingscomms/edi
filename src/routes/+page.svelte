@@ -123,13 +123,16 @@
 			return f < lo || f > pos;
 		});
 		let n = 0;
+		const placed: number[] = [];
 		for (let s = lo; s <= pos && n < FILL_MAX; s++) {
 			const vs = vpos - (pos - s);
 			if (vs < 0 || vs >= N) continue;
 			keep.push({ t: vs / FPS, at: s / FPS });
+			placed.push(vs);
 			n++;
 		}
 		clips = keep.sort((a, b) => a.at - b.at);
+		placed.forEach(ensureThumb);
 	}
 
 	function addNext(t: number) {
@@ -144,13 +147,16 @@
 			return f < pos || f > hi;
 		});
 		let n = 0;
+		const placed: number[] = [];
 		for (let s = pos; s <= hi && n < FILL_MAX; s++) {
 			const vs = vpos + (s - pos);
 			if (vs < 0 || vs >= N) continue;
 			keep.push({ t: vs / FPS, at: s / FPS });
+			placed.push(vs);
 			n++;
 		}
 		clips = keep.sort((a, b) => a.at - b.at);
+		placed.forEach(ensureThumb);
 	}
 
 	function stepHead(d: 1 | -1) {
@@ -163,6 +169,7 @@
 		if (!duration) return;
 		if (head >= duration) head = 0;
 		headPlaying = !headPlaying;
+		if (headPlaying) clips.forEach((c) => ensureThumb(Math.round(c.t * FPS)));
 	}
 
 	function headSeek(e: MouseEvent) {
@@ -185,14 +192,35 @@
 
 	let thumbCache = $state<Record<number, string>>({});
 	const thumbInflight = new Set<number>();
+	const capQueue: number[] = [];
+	let capActive = 0;
+	const CAP_MAX = 2;
 
+	function pumpCaps() {
+		while (capActive < CAP_MAX && capQueue.length) {
+			const fi = capQueue.shift()!;
+			if (thumbCache[fi] !== undefined || thumbInflight.has(fi)) continue;
+			thumbInflight.add(fi);
+			capActive++;
+			captureFrame(fi / FPS).then((img) => {
+				capActive--;
+				thumbInflight.delete(fi);
+				if (img) thumbCache[fi] = img;
+				pumpCaps();
+			});
+		}
+	}
+
+	function ensureThumb(fi: number) {
+		if (thumbCache[fi] !== undefined || thumbInflight.has(fi) || capQueue.includes(fi)) return;
+		capQueue.push(fi);
+		pumpCaps();
+	}
+
+	// Stepping captures the landed frame; never capture mid-play (jank).
 	$effect(() => {
-		if (headFi == null || thumbCache[headFi] !== undefined || thumbInflight.has(headFi)) return;
-		thumbInflight.add(headFi);
-		captureFrame(headFi / FPS).then((img) => {
-			thumbInflight.delete(headFi);
-			if (img) thumbCache[headFi] = img;
-		});
+		if (headFi == null || headPlaying) return;
+		ensureThumb(headFi);
 	});
 
 	function seek(t: number) {
