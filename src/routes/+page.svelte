@@ -209,7 +209,7 @@
 			<div class="strip">
 				{#each markers as m, i (m.t)}
 					<div class="thumb" onclick={() => seek(m.t)} onkeydown={(e) => e.key === 'Enter' && seek(m.t)} role="button" tabindex="0" title={fmt(m.t)}>
-						{#if m.img}<img src={m.img} alt="mark {i + 1}" />{:else}<span class="ph">{fmt(m.t)}</span>}
+						{#if m.img}<img src={m.img} alt="mark {i + 1}" />{:else}<span class="ph">{fmt(m.t)}</span>{/if}
 						<span class="cap">#{i + 1} {fmt(m.t)}</span>
 					</div>
 				{/each}
