@@ -2,12 +2,8 @@
 	type Marker = { t: number; img: string | null };
 
 	let video = $state<HTMLVideoElement | null>(null);
-	let video2 = $state<HTMLVideoElement | null>(null);
 	let fileInput = $state<HTMLInputElement | null>(null);
-	let fileInput2 = $state<HTMLInputElement | null>(null);
 	let src = $state<string | null>(null);
-	let src2 = $state<string | null>(null);
-	let fileName2 = $state('');
 	let fileName = $state('');
 	let duration = $state(0);
 	let now = $state(0);
@@ -15,6 +11,10 @@
 	let markers = $state<Marker[]>([]);
 	let dragOver = $state(false);
 	let storeKey = $state('');
+	let clips = $state<number[]>([]);
+	let head = $state(0);
+	let headPlaying = $state(false);
+	let vidKey = $state('');
 
 	const FPS = 30;
 	const STEP = 1 / FPS;
@@ -38,6 +38,46 @@
 		}
 	}
 
+	const MAX_STORE_VIDEO = 4_000_000;
+
+	function storeVideo(f: File, key: string) {
+		if (f.size > MAX_STORE_VIDEO) {
+			try {
+				localStorage.removeItem(`edi:video:${key}`);
+			} catch { /* noop */ }
+			return;
+		}
+		const r = new FileReader();
+		r.onload = () => {
+			try {
+				localStorage.setItem(`edi:video:${key}`, r.result as string);
+				localStorage.setItem('edi:last-video', JSON.stringify({ key, name: f.name }));
+			} catch { /* quota — marks still persist */ }
+		};
+		r.readAsDataURL(f);
+	}
+
+	async function restoreLastVideo() {
+		try {
+			const raw = localStorage.getItem('edi:last-video');
+			if (!raw) return;
+			const { key, name } = JSON.parse(raw);
+			const url = localStorage.getItem(`edi:video:${key}`);
+			if (!url) return;
+			const blob = await (await fetch(url)).blob();
+			if (src) URL.revokeObjectURL(src);
+			src = URL.createObjectURL(blob);
+			fileName = name;
+			storeKey = `edi:markers:${key}`;
+			vidKey = key;
+			markers = readStored(storeKey).map((t) => ({ t, img: null }));
+			markers.forEach((m) => captureThumb(m.t));
+			clips = readStored(`edi:timeline:${key}`);
+			head = 0;
+			headPlaying = false;
+		} catch { /* nothing usable stored */ }
+	}
+
 	function loadFile(f: File | undefined) {
 		if (!f) return;
 		if (src) URL.revokeObjectURL(src);
@@ -47,22 +87,44 @@
 		duration = 0;
 		playing = false;
 		storeKey = `edi:markers:${f.name}:${f.size}:${f.lastModified}`;
+		vidKey = `${f.name}:${f.size}:${f.lastModified}`;
 		markers = readStored(storeKey).map((t) => ({ t, img: null }));
 		markers.forEach((m) => captureThumb(m.t));
+		clips = readStored(`edi:timeline:${vidKey}`);
+		head = 0;
+		headPlaying = false;
+		storeVideo(f, `${f.name}:${f.size}:${f.lastModified}`);
 	}
 
-	function loadFile2(f: File | undefined) {
-		if (!f) return;
-		if (src2) URL.revokeObjectURL(src2);
-		src2 = URL.createObjectURL(f);
-		fileName2 = f.name;
+	function addClip(t: number) {
+		if (clips.some((c) => Math.abs(c - t) < TOL)) return;
+		clips = [...clips, t].sort((a, b) => a - b);
 	}
 
-	function toggle2() {
-		if (!video2 || !src2) return;
-		if (video2.paused) video2.play();
-		else video2.pause();
+	function stepHead(d: 1 | -1) {
+		if (!duration) return;
+		headPlaying = false;
+		head = Math.min(Math.max(0, Math.round(head * FPS) / FPS + d * STEP), duration);
 	}
+
+	function toggleHead() {
+		if (!duration) return;
+		if (head >= duration) head = 0;
+		headPlaying = !headPlaying;
+	}
+
+	function headSeek(e: MouseEvent) {
+		if (!duration) return;
+		const el = e.currentTarget as HTMLDivElement;
+		const r = el.getBoundingClientRect();
+		headPlaying = false;
+		head = ((e.clientX - r.left) / r.width) * duration;
+	}
+
+	const headClip = $derived(clips.filter((c) => c <= head + TOL).slice(-1)[0] ?? null);
+	const headImg = $derived(
+		headClip == null ? null : (markers.find((m) => Math.abs(m.t - headClip) < TOL)?.img ?? null)
+	);
 
 	function seek(t: number) {
 		if (!video) return;
@@ -170,15 +232,29 @@
 		return () => window.removeEventListener('keydown', onKey);
 	});
 
+	$effect(() => {
+		restoreLastVideo();
+	});
+
 	// Playback readout on rAF, throttled to ~10Hz so scrub/play never
 	// re-renders more than needed (skill: timeline hot path).
 	$effect(() => {
 		let raf = 0;
 		let last = 0;
+		let prev = 0;
 		const loop = (t: number) => {
+			const dt = prev ? (t - prev) / 1000 : 0;
+			prev = t;
 			if (video && !video.paused && !video.seeking && t - last > 100) {
 				last = t;
 				now = video.currentTime;
+			}
+			if (headPlaying && duration) {
+				head += dt;
+				if (head >= duration) {
+					head = duration;
+					headPlaying = false;
+				}
 			}
 			raf = requestAnimationFrame(loop);
 		};
@@ -194,11 +270,14 @@
 		};
 	});
 
+	// Realtime persist of sequence clips.
 	$effect(() => {
-		const url = src2;
-		return () => {
-			if (url) URL.revokeObjectURL(url);
-		};
+		if (!vidKey) return;
+		try {
+			localStorage.setItem(`edi:timeline:${vidKey}`, JSON.stringify(clips));
+		} catch {
+			/* quota — session keeps working */
+		}
 	});
 
 	// Realtime persist of marker times (thumbs re-captured on load).
@@ -294,6 +373,7 @@
 					<div class="thumb" onclick={() => seek(m.t)} onkeydown={(e) => e.key === 'Enter' && seek(m.t)} role="button" tabindex="0" title={fmt(m.t)}>
 						{#if m.img}<img src={m.img} alt="mark {i + 1}" />{:else}<span class="ph">{fmt(m.t)}</span>{/if}
 						<span class="cap">#{i + 1} {fmt(m.t)}</span>
+						<button class="add" onclick={(e) => { e.stopPropagation(); addClip(m.t); }}>+ timeline</button>
 					</div>
 				{/each}
 			</div>
@@ -301,29 +381,27 @@
 		</section>
 		<section class="pane">
 			<div class="bar-top">
-				<span>{fileName2 || 'second view'}</span>
-				<button onclick={() => fileInput2?.click()}>load</button>
-				<input
-					bind:this={fileInput2}
-					type="file"
-					accept="video/*"
-					hidden
-					onchange={(e) => loadFile2((e.target as HTMLInputElement).files?.[0])}
-				/>
+				<span>sequence{clips.length ? ` (${clips.length})` : ''}</span>
 			</div>
-			{#if src2}
-				<video bind:this={video2} src={src2} preload="auto" onclick={toggle2}></video>
-			{:else}
-				<div
-					class="drop slim"
-					role="button"
-					tabindex="0"
-					onclick={() => fileInput2?.click()}
-					onkeydown={(e) => e.key === 'Enter' && fileInput2?.click()}
-				>
-					<p>load second video</p>
-				</div>
-			{/if}
+			<div class="screen">
+				{#if headImg}
+					<img src={headImg} alt="sequence frame" />
+				{:else}
+					<p>{duration ? 'no frame at playhead' : 'load the left video first'}</p>
+				{/if}
+			</div>
+			<div class="timeline" onclick={headSeek} onkeydown={(e) => { if (e.key === 'ArrowLeft') stepHead(-1); if (e.key === 'ArrowRight') stepHead(1); }} role="slider" aria-label="sequence timeline" aria-valuenow={head} aria-valuemax={duration} tabindex="0">
+				{#each clips as c (c)}
+					<div class="marker" style:left={duration ? `${(c / duration) * 100}%` : '0%'} title={fmt(c)}></div>
+				{/each}
+				<div class="head" style:left={duration ? `${(head / duration) * 100}%` : '0%'}></div>
+			</div>
+			<div class="row">
+				<button onclick={() => stepHead(-1)} title="left arrow">◀</button>
+				<button onclick={toggleHead}>{headPlaying ? 'pause' : 'play'}</button>
+				<button onclick={() => stepHead(1)} title="right arrow">▶</button>
+			</div>
+			<p class="meta">{fmt(head)} / {fmt(duration)}</p>
 		</section>
 		</div>
 	{/if}
@@ -351,9 +429,6 @@
 	.pane {
 		flex: 1 1 320px;
 		min-width: 0;
-	}
-	.drop.slim {
-		padding: 40px 20px;
 	}
 	.drop.over {
 		border-color: #fff;
@@ -447,6 +522,24 @@
 		width: 160px;
 		height: 90px;
 		font-size: 12px;
+	}
+	.screen {
+		aspect-ratio: 16 / 9;
+		background: #000;
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		color: #888;
+		font-size: 13px;
+	}
+	.screen img {
+		max-width: 100%;
+		max-height: 100%;
+		display: block;
+	}
+	.thumb .add {
+		margin: 0 4px 4px;
+		font-size: 11px;
 	}
 	.thumb .cap {
 		display: block;
