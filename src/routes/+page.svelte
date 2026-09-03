@@ -2,8 +2,12 @@
 	type Marker = { t: number; img: string | null };
 
 	let video = $state<HTMLVideoElement | null>(null);
+	let video2 = $state<HTMLVideoElement | null>(null);
 	let fileInput = $state<HTMLInputElement | null>(null);
+	let fileInput2 = $state<HTMLInputElement | null>(null);
 	let src = $state<string | null>(null);
+	let src2 = $state<string | null>(null);
+	let fileName2 = $state('');
 	let fileName = $state('');
 	let duration = $state(0);
 	let now = $state(0);
@@ -33,6 +37,19 @@
 		now = 0;
 		duration = 0;
 		playing = false;
+	}
+
+	function loadFile2(f: File | undefined) {
+		if (!f) return;
+		if (src2) URL.revokeObjectURL(src2);
+		src2 = URL.createObjectURL(f);
+		fileName2 = f.name;
+	}
+
+	function toggle2() {
+		if (!video2 || !src2) return;
+		if (video2.paused) video2.play();
+		else video2.pause();
 	}
 
 	function seek(t: number) {
@@ -164,6 +181,13 @@
 			if (url) URL.revokeObjectURL(url);
 		};
 	});
+
+	$effect(() => {
+		const url = src2;
+		return () => {
+			if (url) URL.revokeObjectURL(url);
+		};
+	});
 </script>
 
 <main>
@@ -196,6 +220,8 @@
 			/>
 		</div>
 	{:else}
+		<div class="panes">
+		<section class="pane">
 		<div class="bar-top">
 			<span>{fileName}</span>
 			<button onclick={() => fileInput?.click()}>load other</button>
@@ -250,12 +276,40 @@
 				{/each}
 			</div>
 		{/if}
+		</section>
+		<section class="pane">
+			<div class="bar-top">
+				<span>{fileName2 || 'second view'}</span>
+				<button onclick={() => fileInput2?.click()}>load</button>
+				<input
+					bind:this={fileInput2}
+					type="file"
+					accept="video/*"
+					hidden
+					onchange={(e) => loadFile2((e.target as HTMLInputElement).files?.[0])}
+				/>
+			</div>
+			{#if src2}
+				<video bind:this={video2} src={src2} preload="auto" onclick={toggle2}></video>
+			{:else}
+				<div
+					class="drop slim"
+					role="button"
+					tabindex="0"
+					onclick={() => fileInput2?.click()}
+					onkeydown={(e) => e.key === 'Enter' && fileInput2?.click()}
+				>
+					<p>load second video</p>
+				</div>
+			{/if}
+		</section>
+		</div>
 	{/if}
 </main>
 
 <style>
 	main {
-		max-width: 900px;
+		max-width: 1280px;
 		margin: 0 auto;
 		padding: 16px;
 		font-family: system-ui, sans-serif;
@@ -265,6 +319,19 @@
 		padding: 80px 20px;
 		text-align: center;
 		cursor: pointer;
+	}
+	.panes {
+		display: flex;
+		gap: 16px;
+		align-items: start;
+		flex-wrap: wrap;
+	}
+	.pane {
+		flex: 1 1 320px;
+		min-width: 0;
+	}
+	.drop.slim {
+		padding: 40px 20px;
 	}
 	.drop.over {
 		border-color: #fff;
