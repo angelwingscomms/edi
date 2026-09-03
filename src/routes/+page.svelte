@@ -130,6 +130,30 @@
 		window.addEventListener('keydown', onKey);
 		return () => window.removeEventListener('keydown', onKey);
 	});
+
+	// Playback readout on rAF, throttled to ~10Hz so scrub/play never
+	// re-renders more than needed (skill: timeline hot path).
+	$effect(() => {
+		let raf = 0;
+		let last = 0;
+		const loop = (t: number) => {
+			if (video && !video.paused && !video.seeking && t - last > 100) {
+				last = t;
+				now = video.currentTime;
+			}
+			raf = requestAnimationFrame(loop);
+		};
+		raf = requestAnimationFrame(loop);
+		return () => cancelAnimationFrame(raf);
+	});
+
+	// Evict object URLs (skill: assets as object URLs, evict hard).
+	$effect(() => {
+		const url = src;
+		return () => {
+			if (url) URL.revokeObjectURL(url);
+		};
+	});
 </script>
 
 <main>
