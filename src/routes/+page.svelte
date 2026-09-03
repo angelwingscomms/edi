@@ -14,6 +14,7 @@
 	let playing = $state(false);
 	let markers = $state<Marker[]>([]);
 	let dragOver = $state(false);
+	let storeKey = $state('');
 
 	const FPS = 30;
 	const STEP = 1 / FPS;
@@ -28,15 +29,26 @@
 		return `${String(Math.floor(s / 60)).padStart(2, '0')}:${String(s % 60).padStart(2, '0')}:f${String(f % FPS).padStart(2, '0')}`;
 	}
 
+	function readStored(k: string): number[] {
+		try {
+			const arr = JSON.parse(localStorage.getItem(k) ?? '[]');
+			return Array.isArray(arr) ? arr.filter((t) => typeof t === 'number') : [];
+		} catch {
+			return [];
+		}
+	}
+
 	function loadFile(f: File | undefined) {
 		if (!f) return;
 		if (src) URL.revokeObjectURL(src);
 		src = URL.createObjectURL(f);
 		fileName = f.name;
-		markers = [];
 		now = 0;
 		duration = 0;
 		playing = false;
+		storeKey = `edi:markers:${f.name}:${f.size}:${f.lastModified}`;
+		markers = readStored(storeKey).map((t) => ({ t, img: null }));
+		markers.forEach((m) => captureThumb(m.t));
 	}
 
 	function loadFile2(f: File | undefined) {
@@ -187,6 +199,16 @@
 		return () => {
 			if (url) URL.revokeObjectURL(url);
 		};
+	});
+
+	// Realtime persist of marker times (thumbs re-captured on load).
+	$effect(() => {
+		if (!storeKey) return;
+		try {
+			localStorage.setItem(storeKey, JSON.stringify(markers.map((m) => m.t)));
+		} catch {
+			/* quota — session keeps working */
+		}
 	});
 </script>
 
