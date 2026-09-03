@@ -111,9 +111,46 @@
 		storeVideo(f, `${f.name}:${f.size}:${f.lastModified}`);
 	}
 
-	function addClip(t: number) {
-		const at = Math.round(head * FPS) / FPS;
-		clips = [...clips.filter((c) => Math.abs(c.at - at) >= TOL), { t, at }].sort((a, b) => a.at - b.at);
+	function addPrev(t: number) {
+		if (!duration) return;
+		const N = Math.round(duration * FPS);
+		const pos = Math.round(head * FPS);
+		const vpos = Math.round(t * FPS);
+		const prev = clips.filter((c) => Math.round(c.at * FPS) < pos).slice(-1)[0];
+		const lo = prev ? Math.round(prev.at * FPS) + 1 : 0;
+		const keep = clips.filter((c) => {
+			const f = Math.round(c.at * FPS);
+			return f < lo || f > pos;
+		});
+		let n = 0;
+		for (let s = lo; s <= pos && n < FILL_MAX; s++) {
+			const vs = vpos - (pos - s);
+			if (vs < 0 || vs >= N) continue;
+			keep.push({ t: vs / FPS, at: s / FPS });
+			n++;
+		}
+		clips = keep.sort((a, b) => a.at - b.at);
+	}
+
+	function addNext(t: number) {
+		if (!duration) return;
+		const N = Math.round(duration * FPS);
+		const pos = Math.round(head * FPS);
+		const vpos = Math.round(t * FPS);
+		const next = clips.filter((c) => Math.round(c.at * FPS) > pos)[0];
+		const hi = next ? Math.round(next.at * FPS) - 1 : N - 1;
+		const keep = clips.filter((c) => {
+			const f = Math.round(c.at * FPS);
+			return f < pos || f > hi;
+		});
+		let n = 0;
+		for (let s = pos; s <= hi && n < FILL_MAX; s++) {
+			const vs = vpos + (s - pos);
+			if (vs < 0 || vs >= N) continue;
+			keep.push({ t: vs / FPS, at: s / FPS });
+			n++;
+		}
+		clips = keep.sort((a, b) => a.at - b.at);
 	}
 
 	function stepHead(d: 1 | -1) {
@@ -138,9 +175,25 @@
 
 	const headQ = $derived(Math.round(head * FPS) / FPS);
 	const headClip = $derived(clips.find((c) => Math.abs(c.at - headQ) < TOL) ?? null);
+	const headFi = $derived(headClip ? Math.round(headClip.t * FPS) : null);
 	const headImg = $derived(
-		headClip == null ? null : (markers.find((m) => Math.abs(m.t - headClip.t) < TOL)?.img ?? null)
+		headClip == null
+			? null
+			: (markers.find((m) => Math.abs(m.t - headClip.t) < TOL)?.img ??
+					(headFi == null ? null : (thumbCache[headFi] ?? null)))
 	);
+
+	let thumbCache = $state<Record<number, string>>({});
+	const thumbInflight = new Set<number>();
+
+	$effect(() => {
+		if (headFi == null || thumbCache[headFi] !== undefined || thumbInflight.has(headFi)) return;
+		thumbInflight.add(headFi);
+		captureFrame(headFi / FPS).then((img) => {
+			thumbInflight.delete(headFi);
+			if (img) thumbCache[headFi] = img;
+		});
+	});
 
 	function seek(t: number) {
 		if (!video) return;
@@ -167,37 +220,48 @@
 		}
 	}
 
+	const FILL_MAX = 2000;
+
+	function captureFrame(t: number): Promise<string | null> {
+		return new Promise((resolve) => {
+			const url = src;
+			if (!url) return resolve(null);
+			const v = document.createElement('video');
+			v.muted = true;
+			v.preload = 'auto';
+			v.src = url;
+			v.onloadedmetadata = () => {
+				v.currentTime = Math.min(Math.max(0, t), (v.duration || t + 0.05) - 0.02);
+			};
+			v.onseeked = () => {
+				try {
+					const w = 160;
+					const h = v.videoWidth ? Math.round((v.videoHeight / v.videoWidth) * w) : 90;
+					const c = document.createElement('canvas');
+					c.width = w;
+					c.height = h;
+					c.getContext('2d')!.drawImage(v, 0, 0, w, h);
+					resolve(c.toDataURL('image/jpeg', 0.6));
+				} catch {
+					resolve(null);
+				}
+				v.removeAttribute('src');
+				v.load();
+			};
+			v.onerror = () => {
+				v.removeAttribute('src');
+				v.load();
+				resolve(null);
+			};
+		});
+	}
+
 	function captureThumb(t: number) {
-		const url = src;
-		if (!url) return;
-		const v = document.createElement('video');
-		v.muted = true;
-		v.preload = 'auto';
-		v.src = url;
-		v.onloadedmetadata = () => {
-			v.currentTime = Math.min(Math.max(0, t), (v.duration || t + 0.05) - 0.02);
-		};
-		v.onseeked = () => {
-			try {
-				const w = 160;
-				const h = v.videoWidth ? Math.round((v.videoHeight / v.videoWidth) * w) : 90;
-				const c = document.createElement('canvas');
-				c.width = w;
-				c.height = h;
-				c.getContext('2d')!.drawImage(v, 0, 0, w, h);
-				const img = c.toDataURL('image/jpeg', 0.6);
-				const i = markers.findIndex((m) => Math.abs(m.t - t) < TOL);
-				if (i >= 0) markers[i].img = img;
-			} catch {
-				/* keep timecode placeholder */
-			}
-			v.removeAttribute('src');
-			v.load();
-		};
-		v.onerror = () => {
-			v.removeAttribute('src');
-			v.load();
-		};
+		captureFrame(t).then((img) => {
+			if (!img) return;
+			const i = markers.findIndex((m) => Math.abs(m.t - t) < TOL);
+			if (i >= 0) markers[i].img = img;
+		});
 	}
 
 	function addMarker() {
@@ -412,7 +476,8 @@
 					<div class="thumb" onclick={() => seek(m.t)} onkeydown={(e) => e.key === 'Enter' && seek(m.t)} role="button" tabindex="0" title={fmt(m.t)}>
 						{#if m.img}<img src={m.img} alt="mark {i + 1}" />{:else}<span class="ph">{fmt(m.t)}</span>{/if}
 						<span class="cap">#{i + 1} {fmt(m.t)}</span>
-						<button class="add" onclick={(e) => { e.stopPropagation(); addClip(m.t); }}>+ timeline</button>
+						<button class="add" onclick={(e) => { e.stopPropagation(); addPrev(m.t); }}>addprev</button>
+						<button class="add" onclick={(e) => { e.stopPropagation(); addNext(m.t); }}>addnext</button>
 					</div>
 				{/each}
 			</div>
