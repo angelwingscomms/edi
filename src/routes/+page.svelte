@@ -101,6 +101,16 @@
 		captureThumb(t);
 	}
 
+	function downloadMarkers() {
+		const frames = markers.map((m) => Math.round(m.t * FPS));
+		const blob = new Blob([JSON.stringify(frames)], { type: 'application/json' });
+		const a = document.createElement('a');
+		a.href = URL.createObjectURL(blob);
+		a.download = 'markers.json';
+		a.click();
+		setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+	}
+
 	function removeMarker() {
 		if (!video || !src) return;
 		const t = video.currentTime;
@@ -225,6 +235,7 @@
 			<button onclick={() => stepFrame(1)} title=".">+1f</button>
 			<button onclick={addMarker} title="m">+mark</button>
 			<button onclick={removeMarker} title="n">−mark</button>
+			{#if markers.length}<button onclick={downloadMarkers}>↓json</button>{/if}
 		</div>
 
 		<p class="meta">f{frame}/{totalFrames} · {fmt(now)} / {fmt(duration)} · {markers.length} marks · <code>,</code> <code>.</code> step · <code>space</code> play · <code>m</code>/<code>n</code> mark</p>
