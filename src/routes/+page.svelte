@@ -136,7 +136,8 @@
 		head = ((e.clientX - r.left) / r.width) * duration;
 	}
 
-	const headClip = $derived(clips.filter((c) => c.at <= head + TOL).slice(-1)[0] ?? null);
+	const headQ = $derived(Math.round(head * FPS) / FPS);
+	const headClip = $derived(clips.find((c) => Math.abs(c.at - headQ) < TOL) ?? null);
 	const headImg = $derived(
 		headClip == null ? null : (markers.find((m) => Math.abs(m.t - headClip.t) < TOL)?.img ?? null)
 	);
