@@ -11,7 +11,7 @@
 	let markers = $state<Marker[]>([]);
 	let dragOver = $state(false);
 	let storeKey = $state('');
-	let clips = $state<number[]>([]);
+	let clips = $state<{ t: number; at: number }[]>([]);
 	let head = $state(0);
 	let headPlaying = $state(false);
 	let vidKey = $state('');
@@ -72,10 +72,25 @@
 			vidKey = key;
 			markers = readStored(storeKey).map((t) => ({ t, img: null }));
 			markers.forEach((m) => captureThumb(m.t));
-			clips = readStored(`edi:timeline:${key}`);
+			clips = readClips(`edi:timeline:${key}`);
 			head = 0;
 			headPlaying = false;
 		} catch { /* nothing usable stored */ }
+	}
+
+	function readClips(k: string): { t: number; at: number }[] {
+		try {
+			const arr = JSON.parse(localStorage.getItem(k) ?? '[]');
+			if (!Array.isArray(arr)) return [];
+			return arr.flatMap((c) => {
+				if (typeof c === 'number') return [{ t: c, at: c }];
+				if (Array.isArray(c) && typeof c[0] === 'number' && typeof c[1] === 'number')
+					return [{ t: c[0], at: c[1] }];
+				return [];
+			});
+		} catch {
+			return [];
+		}
 	}
 
 	function loadFile(f: File | undefined) {
@@ -90,15 +105,15 @@
 		vidKey = `${f.name}:${f.size}:${f.lastModified}`;
 		markers = readStored(storeKey).map((t) => ({ t, img: null }));
 		markers.forEach((m) => captureThumb(m.t));
-		clips = readStored(`edi:timeline:${vidKey}`);
+		clips = readClips(`edi:timeline:${vidKey}`);
 		head = 0;
 		headPlaying = false;
 		storeVideo(f, `${f.name}:${f.size}:${f.lastModified}`);
 	}
 
 	function addClip(t: number) {
-		if (clips.some((c) => Math.abs(c - t) < TOL)) return;
-		clips = [...clips, t].sort((a, b) => a - b);
+		const at = Math.round(head * FPS) / FPS;
+		clips = [...clips.filter((c) => Math.abs(c.at - at) >= TOL), { t, at }].sort((a, b) => a.at - b.at);
 	}
 
 	function stepHead(d: 1 | -1) {
@@ -121,9 +136,9 @@
 		head = ((e.clientX - r.left) / r.width) * duration;
 	}
 
-	const headClip = $derived(clips.filter((c) => c <= head + TOL).slice(-1)[0] ?? null);
+	const headClip = $derived(clips.filter((c) => c.at <= head + TOL).slice(-1)[0] ?? null);
 	const headImg = $derived(
-		headClip == null ? null : (markers.find((m) => Math.abs(m.t - headClip) < TOL)?.img ?? null)
+		headClip == null ? null : (markers.find((m) => Math.abs(m.t - headClip.t) < TOL)?.img ?? null)
 	);
 
 	function seek(t: number) {
@@ -236,6 +251,29 @@
 		restoreLastVideo();
 	});
 
+	// Testing: in dev, auto-load the newest video in ~/Downloads
+	// when nothing is stored yet.
+	$effect(() => {
+		if (!import.meta.env.DEV || src) return;
+		let dead = false;
+		(async () => {
+			try {
+				if (localStorage.getItem('edi:last-video')) return;
+				const r = await fetch('/api/latest');
+				if (!r.ok || dead || src) return;
+				const blob = await r.blob();
+				if (dead || src) return;
+				const nm = decodeURIComponent(r.headers.get('X-File-Name') ?? 'download.mp4');
+				loadFile(new File([blob], nm, { type: blob.type || 'video/mp4' }));
+			} catch {
+				/* no test video available */
+			}
+		})();
+		return () => {
+			dead = true;
+		};
+	});
+
 	// Playback readout on rAF, throttled to ~10Hz so scrub/play never
 	// re-renders more than needed (skill: timeline hot path).
 	$effect(() => {
@@ -274,7 +312,7 @@
 	$effect(() => {
 		if (!vidKey) return;
 		try {
-			localStorage.setItem(`edi:timeline:${vidKey}`, JSON.stringify(clips));
+			localStorage.setItem(`edi:timeline:${vidKey}`, JSON.stringify(clips.map((c) => [c.t, c.at])));
 		} catch {
 			/* quota — session keeps working */
 		}
@@ -324,7 +362,7 @@
 		<div class="panes">
 		<section class="pane">
 		<div class="bar-top">
-			<span>{fileName}</span>
+			<span>viewer · {fileName}</span>
 			<button onclick={() => fileInput?.click()}>load other</button>
 			<input
 				bind:this={fileInput}
@@ -381,7 +419,7 @@
 		</section>
 		<section class="pane">
 			<div class="bar-top">
-				<span>sequence{clips.length ? ` (${clips.length})` : ''}</span>
+				<span>editor{clips.length ? ` (${clips.length})` : ''}</span>
 			</div>
 			<div class="screen">
 				{#if headImg}
@@ -391,8 +429,8 @@
 				{/if}
 			</div>
 			<div class="timeline" onclick={headSeek} onkeydown={(e) => { if (e.key === 'ArrowLeft') stepHead(-1); if (e.key === 'ArrowRight') stepHead(1); }} role="slider" aria-label="sequence timeline" aria-valuenow={head} aria-valuemax={duration} tabindex="0">
-				{#each clips as c (c)}
-					<div class="marker" style:left={duration ? `${(c / duration) * 100}%` : '0%'} title={fmt(c)}></div>
+				{#each clips as c (c.at)}
+					<div class="marker" style:left={duration ? `${(c.at / duration) * 100}%` : '0%'} title={fmt(c.t)}></div>
 				{/each}
 				<div class="head" style:left={duration ? `${(head / duration) * 100}%` : '0%'}></div>
 			</div>
