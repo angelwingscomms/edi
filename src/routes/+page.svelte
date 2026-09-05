@@ -15,6 +15,11 @@
 	let head = $state(0);
 	let headPlaying = $state(false);
 	let vidKey = $state('');
+	let seq = $state<HTMLVideoElement | null>(null);
+	let screen = $state<HTMLCanvasElement | null>(null);
+	let seqKey = -2;
+	let lastTarget: number | null = null;
+	const PLAY_TOL = 0.12;
 
 	const FPS = 30;
 	const STEP = 1 / FPS;
@@ -75,6 +80,8 @@
 			clips = readClips(`edi:timeline:${key}`);
 			head = 0;
 			headPlaying = false;
+			seqKey = -2;
+			lastTarget = null;
 		} catch { /* nothing usable stored */ }
 	}
 
@@ -108,6 +115,8 @@
 		clips = readClips(`edi:timeline:${vidKey}`);
 		head = 0;
 		headPlaying = false;
+		seqKey = -2;
+		lastTarget = null;
 		storeVideo(f, `${f.name}:${f.size}:${f.lastModified}`);
 	}
 
@@ -180,15 +189,97 @@
 		head = ((e.clientX - r.left) / r.width) * duration;
 	}
 
+	function nearestClip(q: number) {
+		let lo = 0,
+			hi = clips.length - 1,
+			best = -1;
+		while (lo <= hi) {
+			const mid = (lo + hi) >> 1;
+			if (clips[mid].at <= q) {
+				best = mid;
+				lo = mid + 1;
+			} else hi = mid - 1;
+		}
+		if (best < 0) return null;
+		let b = clips[best];
+		const nx = clips[best + 1];
+		if (nx && Math.abs(nx.at - q) < Math.abs(b.at - q)) b = nx;
+		return b;
+	}
+
+	function drawSeq() {
+		const c = screen,
+			v = seq;
+		if (!c || !v || v.readyState < 2 || !v.videoWidth) return;
+		if (c.width !== v.videoWidth || c.height !== v.videoHeight) {
+			c.width = v.videoWidth;
+			c.height = v.videoHeight;
+		}
+		c.getContext('2d')!.drawImage(v, 0, 0);
+	}
+
+	function black(c: HTMLCanvasElement) {
+		if (!c.width) {
+			c.width = 640;
+			c.height = 360;
+		}
+		const g = c.getContext('2d')!;
+		g.fillStyle = '#000';
+		g.fillRect(0, 0, c.width, c.height);
+	}
+
+	// Diffusion-style sequence playback: one master clock (head), one
+	// persistent decoder (seq), one compositor (canvas). Seek only on
+	// discontinuities (cut points); otherwise let the video run natively.
+	function syncSeq() {
+		const c = screen,
+			v = seq;
+		if (!c || !v || !src || !duration) return;
+		if (!headPlaying && !v.paused) v.pause();
+		const q = Math.round(head * FPS) / FPS;
+		const clip = nearestClip(q);
+		if (!clip || Math.abs(clip.at - q) > STEP) {
+			if (seqKey !== -1) {
+				seqKey = -1;
+				lastTarget = null;
+				v.pause();
+				black(c);
+			}
+			return;
+		}
+		const target = clip.t + (q - clip.at);
+		const tol = headPlaying ? PLAY_TOL : STEP / 2;
+		// Seek only on discontinuities (cuts) or real drift — never every
+		// tick. Each currentTime set aborts the in-flight seek, so setting
+		// it per frame wedges the element in seeking=true and no frame
+		// ever decodes. Between cuts the video runs natively in sync.
+		const prev = lastTarget;
+		lastTarget = target;
+		const cut = prev === null || Math.abs(target - prev) > STEP * 1.5;
+		if (!v.seeking && (cut || Math.abs(v.currentTime - target) > tol)) {
+			seqKey = clip.at;
+			try {
+				v.currentTime = Math.min(Math.max(0, target), duration);
+			} catch {
+				/* seek while metadata loads — next tick retries */
+			}
+		}
+		if (headPlaying && v.paused) {
+			// play() itself unblocks loading (preload alone often stalls at
+			// metadata); never gate it on readyState or nothing unblocks.
+			try {
+				const p = v.play();
+				if (p) p.catch(() => {});
+			} catch {
+				/* next tick retries */
+			}
+		}
+		drawSeq();
+	}
+
 	const headQ = $derived(Math.round(head * FPS) / FPS);
 	const headClip = $derived(clips.find((c) => Math.abs(c.at - headQ) < TOL) ?? null);
 	const headFi = $derived(headClip ? Math.round(headClip.t * FPS) : null);
-	const headImg = $derived(
-		headClip == null
-			? null
-			: (markers.find((m) => Math.abs(m.t - headClip.t) < TOL)?.img ??
-					(headFi == null ? null : (thumbCache[headFi] ?? null)))
-	);
 
 	let thumbCache = $state<Record<number, string>>({});
 	const thumbInflight = new Set<number>();
@@ -387,6 +478,7 @@
 					headPlaying = false;
 				}
 			}
+			syncSeq();
 			raf = requestAnimationFrame(loop);
 		};
 		raf = requestAnimationFrame(loop);
@@ -516,11 +608,8 @@
 				<span>editor{clips.length ? ` (${clips.length})` : ''}</span>
 			</div>
 			<div class="screen">
-				{#if headImg}
-					<img src={headImg} alt="sequence frame" />
-				{:else}
-					<p>{duration ? 'no frame at playhead' : 'load the left video first'}</p>
-				{/if}
+				<canvas bind:this={screen}></canvas>
+				<video bind:this={seq} {src} muted preload="auto" playsinline class="seq" onseeked={drawSeq}></video>
 			</div>
 			<div class="timeline" onclick={headSeek} onkeydown={(e) => { if (e.key === 'ArrowLeft') stepHead(-1); if (e.key === 'ArrowRight') stepHead(1); }} role="slider" aria-label="sequence timeline" aria-valuenow={head} aria-valuemax={duration} tabindex="0">
 				{#each clips as c (c.at)}
@@ -533,7 +622,7 @@
 				<button onclick={toggleHead}>{headPlaying ? 'pause' : 'play'}</button>
 				<button onclick={() => stepHead(1)} title="right arrow">▶</button>
 			</div>
-			<p class="meta">{fmt(head)} / {fmt(duration)}</p>
+			<p class="meta">{fmt(head)} / {fmt(duration)} · muted</p>
 		</section>
 		</div>
 	{/if}
@@ -656,6 +745,7 @@
 		font-size: 12px;
 	}
 	.screen {
+		position: relative;
 		aspect-ratio: 16 / 9;
 		background: #000;
 		display: flex;
@@ -664,10 +754,18 @@
 		color: #888;
 		font-size: 13px;
 	}
-	.screen img {
-		max-width: 100%;
-		max-height: 100%;
+	.screen canvas {
+		width: 100%;
 		display: block;
+		background: #000;
+	}
+	.screen video.seq {
+		position: absolute;
+		left: 0;
+		bottom: 0;
+		width: 4px;
+		opacity: 0;
+		pointer-events: none;
 	}
 	.thumb .add {
 		margin: 0 4px 4px;
